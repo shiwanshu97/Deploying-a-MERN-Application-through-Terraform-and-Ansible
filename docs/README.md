@@ -4,7 +4,6 @@
 
 | | |
 |---|---|
-| **Organization** | HeroX Private Limited |
 | **Application** | [TravelMemory](https://github.com/UnpredictablePrashant/TravelMemory) |
 | **Cloud / Region** | AWS – `ap-south-1` (Mumbai) |
 | **IaC / Config Mgmt** | Terraform `>= 1.5` (AWS provider `~> 6.0`) · Ansible Core 2.21 |
