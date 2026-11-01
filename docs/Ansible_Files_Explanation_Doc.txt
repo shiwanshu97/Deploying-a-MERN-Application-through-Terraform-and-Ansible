@@ -1,0 +1,744 @@
+# Ansible Configuration and Deployment
+
+## 1. Introduction to Ansible
+
+Ansible is an automation and configuration management tool used to configure the AWS EC2 instances created using Terraform.
+
+In this project, Terraform provisions the AWS infrastructure, while Ansible installs and configures the software required to run the TravelMemory MERN application.
+
+We use Ansible to automate:
+
+- MongoDB installation and configuration.
+- MongoDB authentication and database user management.
+- Node.js and NPM installation.
+- TravelMemory application deployment.
+- Backend dependency installation.
+- Frontend production build.
+- Nginx installation and configuration.
+- Backend systemd service configuration.
+- Automatic security updates.
+- Application health verification.
+
+Ansible connects to the EC2 instances over SSH and executes tasks remotely.
+
+## 2. Ansible Directory Structure
+
+The Ansible directory contains the following files and folders:
+
+```text
+ansible/
+│
+├── inventory.ini
+│
+├── site.yml
+│
+├── mongodb.yml
+│
+├── web.yml
+│
+├── group_vars/
+│   ├── database.yml
+│   └── all/
+│       └── vault.yml
+│
+└── templates/
+```
+
+Each file has a specific responsibility in the deployment process.
+
+## 3. inventory.ini – Server Inventory
+
+The `inventory.ini` file contains the IP addresses and SSH connection details of the EC2 instances.
+
+It tells Ansible which servers to configure and how to connect to them.
+
+We created two inventory groups:
+
+### Web server
+
+The web server is placed in the public subnet and has a public IP address.
+
+```ini
+[web]
+65.1.12.125 ansible_user=ubuntu
+```
+
+### Database server
+
+The database server is placed in the private subnet and does not have a public IP address.
+
+```ini
+[database]
+10.0.2.123 ansible_user=ubuntu ansible_ssh_common_args='-o ProxyCommand="ssh -i /Users/shiwanshu/Downloads/HeroViered/DevOps/AWS-Login/shiwanshu-HV-keypair.pem -o IdentitiesOnly=yes -W %h:%p ubuntu@65.1.12.125"'
+```
+
+Since the database server is private, we use the web server as an SSH jump host (bastion).
+
+This allows Ansible to reach the database server through the web server without exposing the database server to the public internet.
+
+### Common SSH variables
+
+```ini
+[all:vars]
+ansible_ssh_private_key_file=/Users/shiwanshu/Downloads/HeroViered/DevOps/AWS-Login/shiwanshu-HV-keypair.pem
+ansible_python_interpreter=/usr/bin/python3
+```
+
+These variables define the SSH private key and the default Python interpreter used by Ansible.
+
+**Why is this file important?**
+
+Without an inventory file, Ansible would not know which servers to manage or how to connect to them.
+
+Note: `inventory.ini` contains environment-specific IP addresses and a local private-key path. It is excluded from Git using `.gitignore`.
+
+## 4. site.yml – Main Ansible Playbook
+
+The `site.yml` file is the main entry point for the Ansible deployment.
+
+Instead of executing multiple playbooks separately, we use this file to execute the database and web server configurations in sequence.
+
+```yaml
+---
+- name: Configure MongoDB database server
+  ansible.builtin.import_playbook: mongodb.yml
+
+- name: Configure TravelMemory web server
+  ansible.builtin.import_playbook: web.yml
+```
+
+### How it works
+
+1. Ansible first executes `mongodb.yml`.
+2. MongoDB is installed and configured on the private database server.
+3. Ansible then executes `web.yml`.
+4. Node.js, Nginx and the TravelMemory application are configured on the public web server.
+
+**Why do we use site.yml?**
+
+It provides a single command to configure the entire application infrastructure.
+
+Execution command:
+
+```bash
+ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+```
+
+## 5. mongodb.yml – MongoDB Server Configuration
+
+The `mongodb.yml` file automates the installation and configuration of MongoDB on the private EC2 instance.
+
+It targets the database inventory group.
+
+```yaml
+---
+- name: Configure MongoDB database server
+  hosts: database
+  become: true
+```
+
+The `become: true` setting allows Ansible to execute administrative tasks using sudo.
+
+### 5.1 Installing required packages
+
+We install the packages needed for MongoDB installation and Python integration:
+
+- gnupg
+- curl
+- python3-venv
+- unattended-upgrades
+
+We also enable automatic security updates through APT.
+
+### 5.2 Adding the MongoDB repository
+
+MongoDB is installed using its official APT repository.
+
+Ansible performs the following operations:
+
+1. Creates the APT keyrings directory.
+2. Downloads the official MongoDB signing key.
+3. Adds the MongoDB 8.0 repository.
+4. Updates the package cache.
+5. Installs MongoDB.
+
+This ensures that the server uses the official MongoDB packages.
+
+### 5.3 Configuring MongoDB network access
+
+MongoDB is configured to listen on:
+
+```yaml
+bindIp: 127.0.0.1,10.0.2.123
+```
+
+This allows local connections and connections through the database server's private IP.
+
+The database server does not need a public IP address.
+
+Access from the web server is controlled by the AWS database security group.
+
+### 5.4 MongoDB kernel compatibility workaround
+
+During installation, MongoDB encountered a kernel compatibility issue on the Ubuntu EC2 instance.
+
+We resolved it by creating a systemd service override:
+
+```ini
+[Service]
+Environment=GLIBC_TUNABLES=glibc.pthread.rseq=1
+```
+
+The configuration is stored at:
+
+```text
+/etc/systemd/system/mongod.service.d/rseq.conf
+```
+
+Ansible also reloads systemd and restarts MongoDB when this configuration changes.
+
+### 5.5 Starting MongoDB
+
+Ansible ensures that the MongoDB service is:
+
+- Installed.
+- Enabled at system startup.
+- Running.
+
+### 5.6 Installing PyMongo
+
+The `community.mongodb.mongodb_user` Ansible module requires a compatible PyMongo library.
+
+We created a Python virtual environment at:
+
+```text
+/opt/mongodb-venv
+```
+
+We installed a compatible PyMongo 4.x version in that environment.
+
+This avoids depending on the older PyMongo version provided by the Ubuntu system packages.
+
+### 5.7 Creating MongoDB users
+
+We created two MongoDB users.
+
+**Administrative user**
+
+```text
+Username: travelmemoryAdmin
+Database: admin
+Role: root
+```
+
+This account is used for database administration.
+
+**Application user**
+
+```text
+Username: travelmemoryApp
+Database: travelmemory
+Role: readWrite
+```
+
+The application user has read and write permissions on the TravelMemory database.
+
+The passwords are stored in Ansible Vault and are not written directly into the playbook.
+
+The MongoDB user-management task uses:
+
+```yaml
+community.mongodb.mongodb_user:
+```
+
+This module allows Ansible to manage MongoDB users automatically.
+
+The task also uses `no_log: true` to prevent sensitive credentials from appearing in Ansible output.
+
+### 5.8 Handlers
+
+The MongoDB playbook contains handlers that run when notified by configuration tasks.
+
+These handlers include:
+
+- Update apt cache.
+- Reload systemd.
+- Restart MongoDB.
+
+Handlers avoid unnecessary service restarts when the configuration has not changed.
+
+## 6. web.yml – Web Server and Application Configuration
+
+The `web.yml` file configures the public EC2 instance.
+
+It automates the deployment of the TravelMemory application and its supporting services.
+
+The main tasks include:
+
+### 6.1 Installing system packages
+
+Ansible installs the required packages, including:
+
+- Nginx.
+- Git.
+- Curl.
+- Node.js prerequisites.
+- Unattended security updates.
+
+### 6.2 Installing Node.js and NPM
+
+We install Node.js 22 using the official NodeSource repository.
+
+The deployed server uses:
+
+```text
+Node.js: v22.23.4
+NPM: 10.9.9
+```
+
+Node.js runs the Express backend, while NPM installs the application dependencies and builds the React frontend.
+
+### 6.3 Deploying the application
+
+The TravelMemory source code is deployed to:
+
+```text
+/opt/travelmemory/application
+```
+
+The application contains two main components:
+
+```text
+application/
+├── backend/
+└── frontend/
+```
+
+The backend contains the Express and Node.js API.
+
+The frontend contains the React user interface.
+
+### 6.4 Installing backend dependencies
+
+Ansible runs `npm ci` inside the backend directory.
+
+This installs the dependencies defined in the backend `package-lock.json`.
+
+The backend connects to MongoDB using the connection string stored in its environment file.
+
+### 6.5 Configuring backend environment variables
+
+The backend environment file is:
+
+```text
+/opt/travelmemory/application/backend/.env
+```
+
+It contains:
+
+```env
+MONGO_URI=<MongoDB connection string>
+PORT=3001
+CORS_ORIGIN=http://65.1.12.125
+UPLOAD_DIR=/var/lib/travelmemory/uploads
+MAX_UPLOAD_MB=5
+TRUST_PROXY=1
+```
+
+The actual MongoDB connection string contains the application database credentials.
+
+The `.env` file is managed securely by Ansible and has restrictive file permissions (`0600`).
+
+Passwords are supplied through Ansible Vault rather than committed to GitHub.
+
+### 6.6 Configuring persistent uploads
+
+Uploaded images are stored in:
+
+```text
+/var/lib/travelmemory/uploads
+```
+
+This provides a persistent upload directory separate from the application source code.
+
+### 6.7 Creating the backend systemd service
+
+We configure a systemd service:
+
+```text
+/etc/systemd/system/travelmemory-backend.service
+```
+
+Its purpose is to manage the Node.js backend as a Linux service.
+
+Important settings include:
+
+```ini
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/travelmemory/application/backend
+EnvironmentFile=/opt/travelmemory/application/backend/.env
+ExecStart=/usr/bin/node index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+```
+
+This ensures that:
+
+- The backend runs as the Ubuntu user.
+- Environment variables are loaded from `.env`.
+- Node.js starts the Express application.
+- The service restarts if it unexpectedly fails.
+- The service starts automatically when the server boots.
+
+### 6.8 Installing frontend dependencies
+
+Ansible runs `npm ci` inside the frontend directory.
+
+This installs the React frontend dependencies.
+
+### 6.9 Building the React frontend
+
+The frontend is compiled for production using:
+
+```bash
+REACT_APP_BACKEND_URL=/api npm run build
+```
+
+The production build is generated in the frontend `build` directory.
+
+The generated files are deployed to:
+
+```text
+/var/www/travelmemory
+```
+
+### 6.10 Configuring frontend permissions
+
+We configure the frontend files and directories so that the Nginx web server can read them.
+
+The owner and group are:
+
+```text
+www-data
+```
+
+This allows Nginx to serve the production frontend.
+
+### 6.11 Configuring Nginx
+
+Nginx is used as the web server and reverse proxy.
+
+The configuration is stored at:
+
+```text
+/etc/nginx/sites-available/travelmemory
+```
+
+The configuration provides three important routes:
+
+**Frontend**
+
+```nginx
+location / {
+    try_files $uri $uri/ /index.html;
+}
+```
+
+This serves the React application and supports frontend routing.
+
+**Backend API**
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:3001/;
+}
+```
+
+Requests to `/api/` are forwarded to the Express backend running on port 3001.
+
+**Uploaded images**
+
+```nginx
+location /uploads/ {
+    proxy_pass http://127.0.0.1:3001/uploads/;
+}
+```
+
+This forwards image requests to the backend upload directory.
+
+Nginx listens on HTTP port 80.
+
+We validate the configuration using `nginx -t` before reloading the service.
+
+## 7. group_vars – Ansible Group Variables
+
+The `group_vars` directory stores variables that can be shared across Ansible inventory groups.
+
+### 7.1 database.yml
+
+Location:
+
+```text
+group_vars/database.yml
+```
+
+Content:
+
+```yaml
+---
+ansible_python_interpreter: /opt/mongodb-venv/bin/python
+```
+
+This tells Ansible to use the Python interpreter inside the MongoDB virtual environment when managing the database server.
+
+We need this because the MongoDB user-management module uses the PyMongo library installed in that environment.
+
+### 7.2 vault.yml – Secure Credential Storage
+
+Location:
+
+```text
+group_vars/all/vault.yml
+```
+
+This file stores sensitive credentials, including:
+
+```yaml
+vault_mongodb_admin_password: <encrypted value>
+vault_mongodb_app_password: <encrypted value>
+```
+
+The actual values are encrypted using Ansible Vault.
+
+Ansible Vault protects passwords from being stored as readable text in the project repository.
+
+We use:
+
+```bash
+ansible-vault create group_vars/all/vault.yml
+```
+
+To run playbooks that need these encrypted variables, we use:
+
+```bash
+--ask-vault-pass
+```
+
+The Vault password is entered interactively and should never be committed to GitHub.
+
+## 8. templates Directory
+
+We created the following directory:
+
+```text
+ansible/templates/
+```
+
+It is reserved for reusable Jinja2 templates.
+
+Templates can be used to generate configuration files dynamically using Ansible variables.
+
+For example, Nginx configurations or environment-specific application settings can be managed through templates.
+
+## 9. SSH Connection Between Ansible and EC2
+
+The web EC2 instance has a public IP address:
+
+```text
+65.1.12.125
+```
+
+The database EC2 instance has a private IP address:
+
+```text
+10.0.2.123
+```
+
+Ansible connects directly to the web server using SSH.
+
+For the database server, Ansible uses an SSH ProxyCommand through the web server.
+
+The connection architecture is:
+
+```text
+Local Mac
+    |
+    | SSH
+    v
+Public Web EC2
+    |
+    | Private SSH connection
+    v
+Private Database EC2
+```
+
+This approach keeps the database server private and avoids opening SSH to the public internet.
+
+We verified the SSH connectivity using:
+
+```bash
+ansible -i inventory.ini all -m ping
+```
+
+Both the web and database servers successfully returned a `pong` response.
+
+## 10. Executing the Ansible Deployment
+
+We use the main playbook to configure both EC2 instances.
+
+From the Ansible directory:
+
+```bash
+ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+```
+
+The deployment executes the following sequence:
+
+1. Connects to the database EC2 instance.
+2. Installs and configures MongoDB.
+3. Ensures the MongoDB users exist.
+4. Connects to the web EC2 instance.
+5. Installs Node.js and NPM.
+6. Deploys the TravelMemory application.
+7. Installs backend and frontend dependencies.
+8. Builds the React frontend.
+9. Configures backend environment variables.
+10. Creates and starts the backend systemd service.
+11. Configures Nginx.
+12. Makes the application available through the web server's public IP.
+
+## 11. Ansible Validation and Testing
+
+We performed the following checks to verify the deployment.
+
+### Check inventory connectivity
+
+```bash
+ansible -i inventory.ini all -m ping
+```
+
+Expected result: Both servers return `pong`.
+
+### Check playbook syntax
+
+```bash
+ansible-playbook -i inventory.ini site.yml --syntax-check
+```
+
+Expected result: Playbook syntax is valid.
+
+### Execute deployment
+
+```bash
+ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+```
+
+Expected result: Both playbooks complete without failed or unreachable hosts.
+
+Our successful execution reported:
+
+```text
+Database server:
+failed=0
+unreachable=0
+
+Web server:
+failed=0
+unreachable=0
+```
+
+### Verify application health
+
+```bash
+curl -i http://65.1.12.125/api/health
+```
+
+The backend returned:
+
+```json
+{
+  "status": "ok",
+  "db": "connected"
+}
+```
+
+This confirms that the Express backend is running and has successfully connected to MongoDB.
+
+## 12. Final Application Architecture
+
+The Ansible configuration completes the application deployment across two EC2 instances.
+
+```text
+                 Internet
+                    |
+                    v
+             AWS Web EC2
+             Public Subnet
+             65.1.12.125
+                    |
+                    v
+                 Nginx
+               Port 80
+                    |
+           +--------+--------+
+           |                 |
+           v                 v
+      React Frontend     Express API
+      Port 80            Port 3001
+                              |
+                              |
+                              v
+                       MongoDB Server
+                       Private Subnet
+                       10.0.2.123
+                       Port 27017
+```
+
+The frontend sends API requests through Nginx to the Express backend.
+
+The backend communicates with MongoDB through the private network.
+
+The database is not directly exposed to the internet.
+
+## 13. Benefits of Using Ansible
+
+Using Ansible provides several advantages:
+
+- **Automation:** Reduces manual server configuration.
+- **Consistency:** Applies the same configuration whenever the playbooks are executed.
+- **Security:** Keeps database credentials in encrypted Ansible Vault storage.
+- **Maintainability:** Separates database and web server configurations.
+- **Repeatability:** Makes it easier to configure replacement EC2 instances.
+- **Centralized deployment:** The `site.yml` file provides a single entry point.
+- **Idempotency:** Ansible modules generally avoid making changes when the desired state already exists.
+
+## 14. Ansible Completion Summary
+
+| Requirement | Status |
+|---|---|
+| Configure Ansible inventory | Completed |
+| Establish SSH connectivity | Completed |
+| Configure private database access | Completed |
+| Install MongoDB | Completed |
+| Configure MongoDB users | Completed |
+| Store credentials using Ansible Vault | Completed |
+| Install Node.js and NPM | Completed |
+| Deploy TravelMemory source code | Completed |
+| Install application dependencies | Completed |
+| Build React frontend | Completed |
+| Configure backend systemd service | Completed |
+| Configure Nginx reverse proxy | Completed |
+| Enable automatic security updates | Completed |
+| Verify application and database health | Completed |
+
+**Conclusion**
+
+Ansible was successfully used to automate the configuration of both AWS EC2 instances and deploy the TravelMemory MERN application.
+
+Terraform handled infrastructure provisioning, while Ansible handled software installation, configuration, application deployment, and service management.
+
+The final application was accessible through the public web server IP, and the backend health endpoint confirmed a successful MongoDB connection.

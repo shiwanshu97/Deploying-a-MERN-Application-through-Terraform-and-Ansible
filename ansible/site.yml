@@ -1,0 +1,6 @@
+---
+- name: Configure MongoDB database server
+  ansible.builtin.import_playbook: mongodb.yml
+
+- name: Configure TravelMemory web server
+  ansible.builtin.import_playbook: web.yml

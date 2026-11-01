@@ -1,0 +1,132 @@
+---
+- name: Configure MongoDB database server
+  hosts: database
+  become: true
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - gnupg
+          - curl
+          - python3-venv
+          - unattended-upgrades
+        state: present
+        update_cache: true
+
+    - name: Enable automatic security updates
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create APT keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download MongoDB signing key
+      ansible.builtin.get_url:
+        url: https://pgp.mongodb.com/server-8.0.asc
+        dest: /etc/apt/keyrings/mongodb-server-8.0.asc
+        mode: "0644"
+      notify: Update apt cache
+
+    - name: Add MongoDB repository
+      ansible.builtin.deb822_repository:
+        name: mongodb-org-8.0
+        types:
+          - deb
+        uris:
+          - https://repo.mongodb.org/apt/ubuntu
+        suites:
+          - noble/mongodb-org/8.0
+        components:
+          - multiverse
+        architectures:
+          - amd64
+          - arm64
+        signed_by: /etc/apt/keyrings/mongodb-server-8.0.asc
+        state: present
+
+    - name: Install MongoDB
+      ansible.builtin.apt:
+        name: mongodb-org
+        state: present
+        update_cache: true
+
+    - name: Configure MongoDB to listen on private network
+      ansible.builtin.replace:
+        path: /etc/mongod.conf
+        regexp: '^\s*bindIp:.*$'
+        replace: "  bindIp: 127.0.0.1,10.0.2.123"
+      notify: Restart MongoDB
+
+    - name: Create MongoDB systemd override directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/mongod.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Configure MongoDB kernel compatibility workaround
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/mongod.service.d/rseq.conf
+        content: |
+          [Service]
+          Environment=GLIBC_TUNABLES=glibc.pthread.rseq=1
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart MongoDB
+
+    - name: Ensure MongoDB is enabled and started
+      ansible.builtin.systemd:
+        name: mongod
+        enabled: true
+        state: started
+
+    - name: Ensure compatible PyMongo is installed
+      ansible.builtin.pip:
+        name: "pymongo>=4,<5"
+        executable: /opt/mongodb-venv/bin/pip
+        state: present
+
+    - name: Ensure TravelMemory application database user exists
+      community.mongodb.mongodb_user:
+        login_host: 127.0.0.1
+        login_port: 27017
+        login_user: travelmemoryAdmin
+        login_password: "{{ vault_mongodb_admin_password }}"
+        login_database: admin
+        database: travelmemory
+        name: travelmemoryApp
+        password: "{{ vault_mongodb_app_password }}"
+        update_password: on_create
+        roles:
+          - db: travelmemory
+            role: readWrite
+        state: present
+      no_log: true
+
+  handlers:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart MongoDB
+      ansible.builtin.systemd:
+        name: mongod
+        state: restarted

@@ -1,0 +1,33 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.tfplan
+
+# SSH private keys
+*.pem
+*.key
+
+# Ansible sensitive files
+ansible/inventory.ini
+ansible/group_vars/all/vault.yml
+# Environment secrets
+.env
+.env.*
+!.env.example
+**/.env
+
+# Node.js dependencies and generated files
+node_modules/
+**/node_modules/
+
+# Build output and logs
+build/
+*.log
+
+# macOS files
+.DS_Store
+
+# Ansible retry files
+*.retry

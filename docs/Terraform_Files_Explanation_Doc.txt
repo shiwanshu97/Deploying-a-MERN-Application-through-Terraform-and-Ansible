@@ -1,0 +1,383 @@
+# TravelMemory – Terraform Infrastructure Guide
+
+## 1. Project Overview
+
+This project deploys the TravelMemory MERN application on AWS using Terraform for infrastructure provisioning and Ansible for application configuration.
+
+The infrastructure uses an existing AWS VPC with separate public and private subnets.
+
+### Planned architecture
+
+- **Public EC2 instance:** Hosts the React frontend, Node.js backend and Nginx.
+- **Private EC2 instance:** Hosts MongoDB.
+- **NAT Gateway:** Allows private instances to access the internet for updates and package installation without assigning them public IP addresses.
+- **Security Groups:** Control network access between the servers and the internet.
+- **IAM Role:** Provides an identity for EC2 instances to access AWS services when required.
+
+---
+
+## 2. Terraform Files Explained
+
+Terraform automatically reads all `.tf` files in the same working directory. File names are chosen for organization and readability; they do not determine execution order.
+
+### 2.1 `providers.tf` – Provider Configuration
+
+**Purpose:** Defines which cloud provider Terraform will use and its configuration.
+
+Our configuration specifies:
+
+- AWS as the cloud provider.
+- AWS provider version constraint.
+- AWS region: `ap-south-1` (Mumbai).
+
+**Why is it needed?**
+
+Terraform needs a provider to communicate with AWS and manage AWS resources.
+
+**Is it mandatory?**
+
+Yes, a provider configuration is normally required for a project that provisions AWS resources. The provider can also be configured through other Terraform mechanisms.
+
+### 2.2 `variable.tf` – Input Variables
+
+**Purpose:** Defines configurable values used by Terraform.
+
+Our variables include:
+
+- AWS region.
+- Project name.
+- Existing VPC ID.
+- Public and private subnet IDs.
+- EC2 instance type.
+- SSH access CIDR.
+- Existing EC2 key pair name.
+- Existing route table IDs.
+
+**Why is it needed?**
+
+Variables prevent us from hardcoding the same values throughout the configuration. They make the project easier to customize and reuse.
+
+For example, changing the EC2 instance type can be done by updating a variable rather than editing multiple resource blocks.
+
+**Is it mandatory?**
+
+No. Small Terraform projects can use fixed values. Variables are recommended when configurations need flexibility or reuse.
+
+### 2.3 `data.tf` – Existing AWS Resource Information
+
+**Purpose:** Retrieves information about AWS resources that already exist.
+
+Our configuration reads:
+
+- Existing VPC.
+- Existing public subnet.
+- Existing private subnet.
+- Existing Internet Gateway.
+- Existing public route table.
+- Existing private route table.
+
+**Why is it needed?**
+
+We decided to reuse the existing AWS networking infrastructure rather than create a completely new VPC.
+
+Terraform data sources allow us to reference existing resources without taking ownership of or recreating them.
+
+**Is it mandatory?**
+
+No. Data sources are needed when a project must reference existing resources. If Terraform creates all the required infrastructure itself, data sources may not be necessary.
+
+### 2.4 `nat.tf` – NAT Gateway Configuration
+
+**Purpose:** Creates a NAT Gateway and provides internet access to instances in the private subnet.
+
+Our configuration creates:
+
+- Elastic IP for the NAT Gateway.
+- NAT Gateway in the public subnet.
+- A default route in the private route table pointing to the NAT Gateway.
+
+**Why is it needed?**
+
+The database EC2 instance is in a private subnet and does not have a public IP address.
+
+However, it may need internet access to download operating system updates and install MongoDB packages.
+
+The NAT Gateway provides outbound internet connectivity without exposing the private instance directly to the internet.
+
+**Is it mandatory?**
+
+No. A NAT Gateway is only required when private resources need outbound internet access through this architecture.
+
+Alternatives include VPC endpoints, NAT instances, preconfigured images or other controlled connectivity methods.
+
+**Cost consideration:** AWS NAT Gateways have hourly and data-processing charges. These costs continue while the gateway exists, even when the application is not actively being used.
+
+### 2.5 `security_group.tf` – Security Groups
+
+**Purpose:** Defines firewall rules for the web and database EC2 instances.
+
+We created two security groups.
+
+**Web Security Group**
+
+Allows:
+
+- SSH (port 22) only from the administrator's public IP address.
+- HTTP (port 80) from the internet.
+- HTTPS (port 443) from the internet.
+- Outbound traffic for required connections.
+
+**Database Security Group**
+
+Allows:
+
+- SSH (port 22) only from the web server's security group.
+- MongoDB (port 27017) only from the web server's security group.
+- Required outbound traffic.
+
+**Why is it needed?**
+
+Security Groups control which network connections are allowed to reach AWS resources.
+
+Separating the security groups prevents the database from being directly accessible from the public internet.
+
+**Is it mandatory?**
+
+Security Groups are generally required for EC2 networking in a VPC, but the number of groups and their rules depend on the application architecture.
+
+### 2.6 `iam.tf` – IAM Role and Instance Profile
+
+**Purpose:** Creates an IAM role that EC2 instances can assume and an instance profile through which the role can be attached to EC2 instances.
+
+Our configuration includes:
+
+- A dedicated EC2 IAM role.
+- A trust policy allowing the EC2 service to assume the role.
+- An instance profile associated with that role.
+
+**Why is it needed?**
+
+IAM roles provide AWS identities to applications and services running on EC2.
+
+This is preferable to storing long-term AWS access keys on an instance.
+
+Currently, our role does not grant additional AWS service permissions. If the application later needs access to services such as S3, we can attach an appropriate least-privilege policy.
+
+**Is it mandatory?**
+
+No. EC2 instances do not always need an IAM role. It depends on whether the instance or software running on it needs to access AWS services.
+
+### 2.7 `ec2.tf` – EC2 Instance Configuration
+
+**Purpose:** Creates the compute instances required by TravelMemory.
+
+Our configuration includes:
+
+**Web EC2 Instance**
+
+- Ubuntu 24.04 LTS AMI.
+- `t3.micro` instance type.
+- Existing public subnet.
+- Web security group.
+- Existing SSH key pair.
+- Dedicated IAM instance profile.
+- Encrypted 12 GB gp3 root volume.
+- Public IP address.
+
+**Database EC2 Instance**
+
+- Ubuntu 24.04 LTS AMI.
+- `t3.micro` instance type.
+- Existing private subnet.
+- Database security group.
+- Existing SSH key pair.
+- Dedicated IAM instance profile.
+- Encrypted 12 GB gp3 root volume.
+- No public IP address.
+
+**Why is it needed?**
+
+EC2 provides the virtual servers on which we will install and run the application and database.
+
+**Is it mandatory?**
+
+No. EC2 is specific to this deployment choice. Other projects may use containers, ECS, EKS, Lambda, managed databases or other compute services.
+
+### 2.8 `outputs.tf` – Output Values
+
+**Purpose:** Displays useful information after Terraform creates the infrastructure.
+
+Our outputs include:
+
+- Web server public IP address.
+- Web server public DNS name.
+- Database server private IP address.
+- Web security group ID.
+- Database security group ID.
+
+**Why is it needed?**
+
+These values help us connect to the servers and configure Ansible.
+
+For example, Ansible needs the server IP addresses to know which machines to configure.
+
+**Is it mandatory?**
+
+No. Outputs are optional, but they are very useful when information from one Terraform configuration needs to be used elsewhere.
+
+### 2.9 `terraform.tfvars` – Variable Values
+
+**Purpose:** Supplies actual values for Terraform variables.
+
+Our file currently provides:
+
+- Administrator public IP address in CIDR format for restricted SSH access.
+
+**Why is it needed?**
+
+It separates environment-specific values from the main Terraform configuration.
+
+**Is it mandatory?**
+
+No. Variables can have default values, and values can also be supplied through command-line options or environment variables.
+
+**Security note:** This file is excluded from Git because it may contain environment-specific or sensitive values.
+
+---
+
+## 3. How the Files Work Together
+
+The following is the overall workflow:
+
+1. `providers.tf` configures the AWS provider.
+2. `variable.tf` defines configurable inputs.
+3. `terraform.tfvars` supplies selected variable values.
+4. `data.tf` retrieves existing AWS networking resources.
+5. `nat.tf` configures outbound internet access for the private subnet.
+6. `security_group.tf` creates firewall rules.
+7. `iam.tf` creates the EC2 IAM role and instance profile.
+8. `ec2.tf` creates the web and database servers.
+9. `outputs.tf` displays useful deployment information.
+
+Terraform evaluates dependencies between resources automatically. The order above is an explanation of their responsibilities, not a required execution order.
+
+---
+
+## 4. Are All These Files Mandatory in Every Terraform Project?
+
+**No.** Terraform projects differ depending on the infrastructure requirements.
+
+| File | Mandatory in every project? |
+|---|---|
+| `providers.tf` | Normally, a provider configuration is required for cloud provisioning |
+| `variable.tf` | No |
+| `data.tf` | No |
+| `nat.tf` | No |
+| `security_group.tf` | Depends on the resources and networking requirements |
+| `iam.tf` | No |
+| `ec2.tf` | No |
+| `outputs.tf` | No |
+| `terraform.tfvars` | No |
+
+For example:
+
+- A simple S3 bucket project may only need provider and resource configuration.
+- A static website may use S3 and CloudFront without EC2.
+- A serverless application may use Lambda and API Gateway.
+- A three-tier application may need separate web, application and database layers.
+- A private application may require NAT Gateway or VPC endpoints, depending on its connectivity requirements.
+
+The best practice is to organize Terraform files according to the infrastructure being created, not to create every possible file in every project.
+
+---
+
+## 5. Important Deployment Considerations
+
+Before applying this Terraform configuration:
+
+1. Review the Terraform plan carefully.
+2. Confirm that existing VPC networking resources will not be unintentionally replaced.
+3. Confirm that the private route table retains its existing VPC endpoint route.
+4. Check that the EC2 key pair exists in the selected AWS region.
+5. Check that the SSH CIDR matches the administrator's current public IP.
+6. Review the estimated AWS charges, especially NAT Gateway, Elastic IP and EC2 costs.
+7. Do not expose the MongoDB port publicly.
+8. Do not commit private SSH keys, Terraform state files or sensitive variable files to Git.
+
+Terraform validation checks configuration syntax and internal consistency. It does not guarantee that AWS will successfully create every resource or that the deployment will work as intended.
+
+---
+
+## 6. Project Technology Stack
+
+| Technology | Responsibility |
+|---|---|
+| Terraform | AWS infrastructure provisioning |
+| AWS VPC | Network isolation |
+| AWS EC2 | Virtual servers |
+| AWS NAT Gateway | Private subnet outbound internet |
+| AWS Security Groups | Network access control |
+| AWS IAM | Instance identity and permissions |
+| Ubuntu | Server operating system |
+| Ansible | Server configuration and application deployment |
+| MongoDB | Application database |
+| Node.js / Express | Backend API |
+| React | Frontend |
+| Nginx | Web server and reverse proxy |
+
+---
+
+### Additional Security: IMDSv2 (Instance Metadata Service Version 2)
+
+**Purpose:** Enforces secure access to EC2 instance metadata.
+
+EC2 instances use the Instance Metadata Service (IMDS) to retrieve information about themselves, including instance details and temporary IAM role credentials.
+
+We have enabled IMDSv2 on both the web and database EC2 instances.
+
+**Configuration used:**
+
+```hcl
+metadata_options {
+  http_endpoint               = "enabled"
+  http_tokens                 = "required"
+  http_put_response_hop_limit = 1
+}
+```
+
+**Explanation of the settings:**
+
+- `http_endpoint = "enabled"`: Enables the EC2 metadata service.
+- `http_tokens = "required"`: Requires a session token for metadata requests and disables IMDSv1 access.
+- `http_put_response_hop_limit = 1`: Limits the metadata token response to one network hop, helping reduce exposure through container network paths.
+
+**Why is it needed?**
+
+IMDSv2 provides additional protection against certain attacks that attempt to access instance metadata and temporary IAM credentials through vulnerable applications or server-side request forgery (SSRF) vulnerabilities.
+
+**Is it mandatory?**
+
+No. However, IMDSv2 is recommended as a security best practice for EC2 instances.
+
+**Benefits in this project:**
+
+- Improves protection of temporary IAM credentials.
+- Reduces certain metadata access risks.
+- Enforces token-based metadata requests.
+- Strengthens the security configuration of both application servers.
+
+**Important:** IMDSv2 is an additional security control. It does not replace application security, firewall rules, or least-privilege IAM permissions.
+
+## 7. Conclusion
+
+This Terraform configuration is designed specifically for deploying the TravelMemory MERN application using a public web server and a private database server.
+
+The configuration reuses existing AWS networking resources and creates the additional infrastructure required for the application.
+
+The design separates infrastructure provisioning from application configuration:
+
+- Terraform provisions the AWS infrastructure.
+- Ansible installs and configures software on the EC2 instances.
+- TravelMemory runs on the resulting infrastructure.
+
+This separation makes the deployment easier to maintain, understand and reproduce.
